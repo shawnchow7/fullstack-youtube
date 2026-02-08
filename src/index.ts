@@ -1,34 +1,58 @@
 import express from 'express'
 import ffmpeg from 'fluent-ffmpeg';
+import { setUpDirectories, convertVideo, downloadRawVideo, uploadProcessedVideo, deleteRawVideo, deleteProcessedVideo } from './storage';
 
 const app = express()
+setUpDirectories() // to ensure that the file directory exists
 
 app.use(express.json())
 const port = 3000
 
-app.post('/process-video', (request,response) => {
-
-    //first thing is to get the input file path & output file path for the videos
-    const inputFilePath = request.body.inputfilepath
-    const outputFilePath = request.body.outputfilepath
-
-    //just to make sure that there is request body actually have those fields
-    if(!inputFilePath || !outputFilePath){
-        return response.status(500).send('Bad request: invalid file path')
+app.post('/process-video', async (req,res) => {
+    // Get the bucket and filename from the Cloud Pub/Sub message
+  let data;
+  try {
+    const message = Buffer.from(req.body.message.data, 'base64').toString('utf8');
+    data = JSON.parse(message);
+    if (!data.name) {
+      throw new Error('Invalid message payload received.');
     }
+  } catch (error) {
+    console.error(error);
+    return res.status(400).send('Bad Request: missing filename.');
+  }
 
-    // Create the ffmpeg command
-    ffmpeg(inputFilePath)
-        .outputOptions('-vf', 'scale=-1:360') // 360p
-        .on('end', function() {
-            console.log('Processing finished successfully');
-            response.status(200).send('Processing finished successfully');
-        })
-        .on('error', function(err: any) {
-            console.log('An error occurred: ' + err.message);
-            response.status(500).send('An error occurred: ' + err.message);
-        })
-        .save(outputFilePath);
+  //input file name
+  const inputFileName= data.name
+  const outputFileName = `processed-${inputFileName}`
+
+  //download the video from bucket
+  await downloadRawVideo(inputFileName)
+
+  //convert the video
+  try {
+    await convertVideo(inputFileName,outputFileName)
+    
+  } catch (error) {
+    console.error(error)
+    await deleteRawVideo(inputFileName)
+    await deleteProcessedVideo(outputFileName)
+    return res.status(500).send('internal server error 500')
+  }
+
+  //upload back to storage
+  await uploadProcessedVideo(outputFileName)
+
+  //delete the file in local folder
+  await deleteRawVideo(inputFileName)
+  await deleteProcessedVideo(outputFileName)
+
+  
+
+
+
+
+ 
 
 })
 
